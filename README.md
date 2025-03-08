@@ -1,6 +1,6 @@
 # GALA
 
-Swift Unfolding of Communities: GPU-Accelerated Louvain Algorithm
+[Swift Unfolding of Communities: GPU-Accelerated Louvain Algorithm](https://dl.acm.org/doi/10.1145/3710848.3710884)
 
 ## Dependencies
 
