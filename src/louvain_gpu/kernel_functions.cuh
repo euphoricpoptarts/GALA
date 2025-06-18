@@ -47,6 +47,13 @@ struct degree_filter_greater_than
     __host__ __device__ bool operator()(edge_t x) { return (lower <= x); }
 };
 
+struct degree_filter_greater_than_
+{
+    int lower;
+    __host__ __device__ degree_filter_greater_than_(int l) : lower(l) {}
+    __host__ __device__ bool operator()(edge_t x) { return (lower < x); }
+};
+
 struct modularity_op
 {
     double constant;
@@ -189,36 +196,43 @@ __device__ void compute_neighbors_weights(int com, weight_t *weights, vertex_t *
                                           weight_t *new_weights, vertex_t *new_neighbors, edge_t *new_degrees,
                                           int *community, int *gathered_vertex_ptr, int *gathered_vertex_by_community,
                                           int *neighbor_com_ids, int *neighbor_com_weights,
-                                          int laneId, int table_size, int warp_size);
+                                          int laneId, int table_size, int warp_size, int is_store);
 
 __device__ void compute_neighbors_weights_blk(int com, weight_t *weights, vertex_t *neighbors, edge_t *degrees,
                                               weight_t *new_weights, vertex_t *new_neighbors, edge_t *new_degrees,
                                               int *community, int *gathered_vertex_ptr, int *gathered_vertex_by_community,
                                               int *neighbor_com_ids, int *neighbor_com_weights,
-                                              int threadIdInBlk, int table_size, int warp_size);
+                                              int threadIdInBlk, int table_size, int warp_size, int is_store);
 
 __device__ void compute_neighbors_weights_list(int com, weight_t *weights, vertex_t *neighbors, edge_t *degrees,
                                                weight_t *new_weights, vertex_t *new_neighbors, edge_t *new_degrees,
                                                int *community, int *gathered_vertex_ptr, int *gathered_vertex_by_community,
                                                int *neighbor_com_ids, int *neighbor_com_weights,
-                                               int laneId, int community_num, int warp_size);
+                                               int laneId, int community_num, int warp_size, int is_store);
 
 __device__ void compute_neighbors_weights_blk_list(int com, weight_t *weights, vertex_t *neighbors, edge_t *degrees,
                                                    weight_t *new_weights, vertex_t *new_neighbors, edge_t *new_degrees,
                                                    int *community, int *gathered_vertex_ptr, int *gathered_vertex_by_community,
                                                    int *neighbor_com_ids, int *neighbor_com_weights,
-                                                   int threadIdInBlk, int community_num, int warp_size);
+                                                   int threadIdInBlk, int community_num, int warp_size, int is_store);
 
 __global__ void build_by_warp(int *sorted_community_id, weight_t *weights, vertex_t *neighbors, edge_t *degrees,
                               weight_t *new_weights, vertex_t *new_neighbors, edge_t *new_degrees,
                               edge_t *neighbor_com_ptr_max, edge_t *edge_num_of_community, int *gathered_vertex_ptr, int *gathered_vertex_by_community, int *community,
-                              int com_num_to_proc, int table_size, int warp_size, int community_num);
+                              int com_num_to_proc, int table_size, int warp_size, int community_num, int is_store);
 
 __global__ void build_by_block(int *sorted_community_id, weight_t *weights, vertex_t *neighbors, edge_t *degrees,
-                               weight_t *new_weights, vertex_t *new_neighbors, edge_t *new_degrees,
-                               edge_t *neighbor_com_ptr_max, edge_t *edge_num_of_community, int *gathered_vertex_ptr, int *gathered_vertex_by_community, int *community,
-                               int *global_table_ptr, int *glbTable, int *primes, int prime_num,
-                               int com_num_to_proc, int warp_size, int global_limit, int community_num);
+                                weight_t *new_weights, vertex_t *new_neighbors, edge_t *new_degrees,
+                                edge_t *neighbor_com_ptr_max, edge_t *edge_num_of_community, int *gathered_vertex_ptr, int *gathered_vertex_by_community, int *community,
+                                int *global_table_ptr, int *glbTable, int glb_table_size,
+                                int *primes, int prime_num,
+                                int com_num_to_proc, int warp_size, int global_limit, int community_num, int is_store);
+
+__global__ void build_by_grid(int *sorted_community_id, weight_t *weights, vertex_t *neighbors, edge_t *degrees,
+                                weight_t *new_weights, vertex_t *new_neighbors, edge_t *new_degrees,
+                                 edge_t *neighbor_com_ptr_max, edge_t *edge_num_of_community, int *gathered_vertex_ptr, int *gathered_vertex_by_community, int *community,
+                                 int *global_table_ptr, int *glbTable, int glb_table_size, int *primes, int prime_num,
+                                 int com_num_to_proc, int warp_size, int global_limit, int community_num, int* block_sum, int is_store);
 
 __global__ void save_next_In(int *In, int *next_In, int* prev_community, int *cur_community,
                              int *active_set, int *is_moved, int *target_com_weights,

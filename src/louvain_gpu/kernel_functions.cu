@@ -1,6 +1,8 @@
 #include "gpu_config.h"
 #include "graph/graph_config.h"
 #include "kernel_functions.cuh"
+#include <cooperative_groups.h>
+namespace cg = cooperative_groups;
 using namespace std;
 
 __device__ int find_prime_by_warp(int *primes, int prime_num, int threshold, int warp_size)
@@ -64,8 +66,10 @@ __global__ void init_communities(weight_t *weights, vertex_t *neighbors, edge_t 
         if (lane_id == 0)
         {
             prev_community[warp_id] = warp_id;
+            // vertex_t comm = prev_community[vertex_id];
             K[warp_id] = degree;
             Tot[warp_id] = degree;
+            // atomicAdd(&Tot[comm], degree);
         }
         warp_id += thread_num / warp_size;
     }
@@ -1171,7 +1175,7 @@ __device__ void compute_neighbors_weights(int com, weight_t *weights, vertex_t *
                                           weight_t *new_weights, vertex_t *new_neighbors, edge_t *new_degrees,
                                           int *community, int *gathered_vertex_ptr, int *gathered_vertex_by_community,
                                           int *neighbor_com_ids, int *neighbor_com_weights,
-                                          int lane_id, int table_size, int warp_size)
+                                          int lane_id, int table_size, int warp_size, int is_store)
 {
 
     int start_vertex = gathered_vertex_ptr[com];
@@ -1213,30 +1217,31 @@ __device__ void compute_neighbors_weights(int com, weight_t *weights, vertex_t *
         new_degrees[com] = pos;
     }
 
-    pos = pos - neighbor_com_num; // the positon of new neighborcom
+    if(is_store == 1){
+        pos = pos - neighbor_com_num; // the positon of new neighborcom
+        for (int i = start_vertex; i < end_vertex; i++)
+        { //
+            int v = gathered_vertex_by_community[i];
+            edge_t start_neighbor = degrees[v];
+            edge_t end_neighbor = degrees[v + 1];
 
-    for (int i = start_vertex; i < end_vertex; i++)
-    { //
-        int v = gathered_vertex_by_community[i];
-        edge_t start_neighbor = degrees[v];
-        edge_t end_neighbor = degrees[v + 1];
-
-        for (int j = lane_id; j < (end_neighbor - start_neighbor); j += warp_size)
-        {
-            int neighbor_v = neighbors[start_neighbor + j];
-            int flag = 1;
-            if (neighbor_v < 0)
+            for (int j = lane_id; j < (end_neighbor - start_neighbor); j += warp_size)
             {
-                flag = -1;
-            }
-            neighbors[start_neighbor + j] = neighbor_v = neighbor_v * flag - 1;
-            int neighbor_com = community[neighbor_v];
-            int map_pos = find_neighbor_com_info_for_com(neighbor_com_ids, neighbor_com_weights, table_size, neighbor_com);
-            if (map_pos >= 0 && flag == -1)
-            { // each neighborcom is only visited once
-                new_neighbors[pos] = neighbor_com_ids[map_pos] - 1;
-                new_weights[pos] = neighbor_com_weights[map_pos];
-                pos = pos + 1;
+                int neighbor_v = neighbors[start_neighbor + j];
+                int flag = 1;
+                if (neighbor_v < 0)
+                {
+                    flag = -1;
+                }
+                neighbors[start_neighbor + j] = neighbor_v = neighbor_v * flag - 1;
+                int neighbor_com = community[neighbor_v];
+                int map_pos = find_neighbor_com_info_for_com(neighbor_com_ids, neighbor_com_weights, table_size, neighbor_com);
+                if (map_pos >= 0 && flag == -1)
+                { // each neighborcom is only visited once
+                    new_neighbors[pos] = neighbor_com_ids[map_pos] - 1;
+                    new_weights[pos] = neighbor_com_weights[map_pos];
+                    pos = pos + 1;
+                }
             }
         }
     }
@@ -1246,7 +1251,7 @@ __device__ void compute_neighbors_weights_blk(int com, weight_t *weights, vertex
                                               weight_t *new_weights, vertex_t *new_neighbors, edge_t *new_degrees,
                                               int *community, int *gathered_vertex_ptr, int *gathered_vertex_by_community,
                                               int *neighbor_com_ids, int *neighbor_com_weights,
-                                              int thread_id_in_blk, int table_size, int warp_size)
+                                              int thread_id_in_blk, int table_size, int warp_size, int is_store)
 {
     int start_vertex = gathered_vertex_ptr[com];
     int end_vertex = gathered_vertex_ptr[com + 1]; // get the position of vertexs in com
@@ -1320,54 +1325,57 @@ __device__ void compute_neighbors_weights_blk(int com, weight_t *weights, vertex
         new_degrees[com] = sum;
     }
 
-    int warp_id = threadIdx.x / warp_size;
+    if(is_store == 1){
+        int warp_id = threadIdx.x / warp_size;
 
-    int recv_sum = __shfl_sync(0xffffffff, sum, warp_id - 1, warp_size);
-    if (warp_id >= 1)
-    {
-        pos += recv_sum;
-    }
-
-    pos = pos - neighbor_com_num; // the positon of new neighborcom
-
-    // __syncthreads();
-
-    for (int i = start_vertex; i < end_vertex; i++)
-    { //
-
-        int v = gathered_vertex_by_community[i];
-
-        edge_t start_neighbor = degrees[v];
-        edge_t end_neighbor = degrees[v + 1];
-
-        for (int j = thread_id_in_blk; j < (end_neighbor - start_neighbor); j += blockDim.x)
+        int recv_sum = __shfl_sync(0xffffffff, sum, warp_id - 1, warp_size);
+        if (warp_id >= 1)
         {
-            int neighbor_v = neighbors[start_neighbor + j];
-            int flag = 1;
-            if (neighbor_v < 0)
+            pos += recv_sum;
+        }
+
+        pos = pos - neighbor_com_num; // the positon of new neighborcom
+
+        // __syncthreads();
+
+        for (int i = start_vertex; i < end_vertex; i++)
+        { //
+
+            int v = gathered_vertex_by_community[i];
+
+            edge_t start_neighbor = degrees[v];
+            edge_t end_neighbor = degrees[v + 1];
+
+            for (int j = thread_id_in_blk; j < (end_neighbor - start_neighbor); j += blockDim.x)
             {
-                flag = -1;
-            }
-            neighbors[start_neighbor + j] = neighbor_v = neighbor_v * flag - 1;
-            int neighbor_com = community[neighbor_v];
-            int map_pos = find_neighbor_com_info_for_com(neighbor_com_ids, neighbor_com_weights, table_size, neighbor_com);
+                int neighbor_v = neighbors[start_neighbor + j];
+                int flag = 1;
+                if (neighbor_v < 0)
+                {
+                    flag = -1;
+                }
+                neighbors[start_neighbor + j] = neighbor_v = neighbor_v * flag - 1;
+                int neighbor_com = community[neighbor_v];
+                int map_pos = find_neighbor_com_info_for_com(neighbor_com_ids, neighbor_com_weights, table_size, neighbor_com);
 
-            if (map_pos >= 0 && flag == -1)
-            { // each neighborcom is only visited once
+                if (map_pos >= 0 && flag == -1)
+                { // each neighborcom is only visited once
 
-                new_neighbors[pos] = neighbor_com_ids[map_pos] - 1;
-                new_weights[pos] = neighbor_com_weights[map_pos];
-                pos = pos + 1;
+                    new_neighbors[pos] = neighbor_com_ids[map_pos] - 1;
+                    new_weights[pos] = neighbor_com_weights[map_pos];
+                    pos = pos + 1;
+                }
             }
         }
     }
+    
 }
 
 __device__ void compute_neighbors_weights_list(int com, weight_t *weights, vertex_t *neighbors, edge_t *degrees,
                                                weight_t *new_weights, vertex_t *new_neighbors, edge_t *new_degrees,
                                                int *community, int *gathered_vertex_ptr, int *gathered_vertex_by_community,
                                                int *neighbor_com_ids, int *neighbor_com_weights,
-                                               int lane_id, int community_num, int warp_size)
+                                               int lane_id, int community_num, int warp_size, int is_store)
 {
 
     int start_vertex = gathered_vertex_ptr[com];
@@ -1393,8 +1401,10 @@ __device__ void compute_neighbors_weights_list(int com, weight_t *weights, verte
     {
         if (neighbor_com_weights[i] > 0)
         {
-            new_neighbors[i] = i;
-            new_weights[i] = neighbor_com_weights[i];
+            if(is_store==1){
+                new_neighbors[i] = i;
+                new_weights[i] = neighbor_com_weights[i];
+            }
             neighbor_num += 1;
         }
     }
@@ -1406,12 +1416,114 @@ __device__ void compute_neighbors_weights_list(int com, weight_t *weights, verte
         // printf("2lim:%d %d \n",com,sum);
     }
 }
+__device__ void compute_neighbors_weights_blk_list_v2(int com, weight_t *weights, vertex_t *neighbors, edge_t *degrees,
+                                              weight_t *new_weights, vertex_t *new_neighbors, edge_t *new_degrees,
+                                              int *community, int *gathered_vertex_ptr, int *gathered_vertex_by_community,
+                                              int *neighbor_com_ids, int *neighbor_com_weights,
+                                              int thread_id_in_blk, int community_num, int warp_size, int is_store)//store by prefix sum 
+                                              //when new_neighnors.size < comm_num
+{
+    int start_vertex = gathered_vertex_ptr[com];
+    int end_vertex = gathered_vertex_ptr[com + 1]; // get the position of vertexs in com
+    int neighbor_com_num = 0;                      //
+
+    for (int i = start_vertex; i < end_vertex; i++)
+    { //
+        int v = gathered_vertex_by_community[i];
+        edge_t start_neighbor = degrees[v];
+        edge_t end_neighbor = degrees[v + 1];
+
+        for (int j = threadIdx.x; j < (end_neighbor - start_neighbor); j += blockDim.x)
+        {
+            int neighbor_v = neighbors[start_neighbor + j];
+            // printf("%d %d\n",blockIdx.x,neighbor_v);
+            int neighbor_com = community[neighbor_v];
+            int neighbor_weight = weights[start_neighbor + j]; //!!!!!!!!!!!!!
+
+            atomicAdd(&neighbor_com_weights[neighbor_com], neighbor_weight);
+            // if (res == 0)
+            //     neighbor_com_num += 1;
+            // __syncthreads();
+        }
+    }
+    __syncthreads();
+    for(int i = threadIdx.x; i < community_num; i += blockDim.x){
+        if(neighbor_com_weights[i] > 0){
+            neighbor_com_num += 1;
+        }
+    }
+    // inclusive scan block
+    int pos = neighbor_com_num;
+
+    int lane_id = threadIdx.x % warp_size;
+    int warp_num_in_blk = blockDim.x / warp_size;
+
+    for (int i = 1; i <= warp_size / 2; i *= 2)
+    { // total neighbor num of a warp(merge vertex)
+
+        int value = __shfl_up_sync(0xffffffff, pos, i, warp_size);
+
+        if (lane_id >= i)
+            pos += value;
+    }
+    // __syncthreads();
+
+    __shared__ int shared_to_sum[32]; // blockdim:1024 warp:32 must!!!!
+    int *sum_each_warp = shared_to_sum;
+    if (lane_id == warp_size - 1)
+    {
+        sum_each_warp[threadIdx.x / warp_size] = pos;
+    }
+
+    __syncthreads();
+    int sum = 0;
+    if (lane_id < warp_num_in_blk)
+    {
+        sum = sum_each_warp[lane_id];
+    }
+
+    for (int i = 1; i <= warp_size / 2; i *= 2)
+    { // total neighbor num of a block(merge vertex)
+        int value = __shfl_up_sync(0xffffffff, sum, i, warp_size);
+        if (lane_id >= i)
+            sum += value;
+    }
+
+    if (threadIdx.x == blockDim.x - 1)
+    {
+        // printf("%d %d %d\n",blockIdx.x,com,sum);
+        new_degrees[com] = sum;
+    }
+
+    if(is_store==1){
+        int warp_id = threadIdx.x / warp_size;
+
+        int recv_sum = __shfl_sync(0xffffffff, sum, warp_id - 1, warp_size);
+        if (warp_id >= 1)
+        {
+            pos += recv_sum;
+        }
+
+        pos = pos - neighbor_com_num; // the positon of new neighborcom
+
+        // __syncthreads();
+        for(int i = threadIdx.x; i < community_num; i += blockDim.x){
+            if(neighbor_com_weights[i] > 0){
+                new_neighbors[pos] = i;
+                new_weights[pos] = neighbor_com_weights[i];
+                pos = pos + 1;
+            }
+        }
+    }
+    
+}
+
 
 __device__ void compute_neighbors_weights_blk_list(int com, weight_t *weights, vertex_t *neighbors, edge_t *degrees,
                                                    weight_t *new_weights, vertex_t *new_neighbors, edge_t *new_degrees,
                                                    int *community, int *gathered_vertex_ptr, int *gathered_vertex_by_community,
                                                    int *neighbor_com_ids, int *neighbor_com_weights,
-                                                   int thread_id_in_blk, int community_num, int warp_size)
+                                                   int thread_id_in_blk, int community_num, int warp_size, int is_store)
 {
     int start_vertex = gathered_vertex_ptr[com];
     int end_vertex = gathered_vertex_ptr[com + 1]; // get the position of vertexs in com
@@ -1441,8 +1553,10 @@ __device__ void compute_neighbors_weights_blk_list(int com, weight_t *weights, v
     {
         if (neighbor_com_weights[i] > 0)
         {
-            new_neighbors[i] = i;
-            new_weights[i] = neighbor_com_weights[i];
+            if(is_store==1){
+                new_neighbors[i] = i;
+                new_weights[i] = neighbor_com_weights[i];
+            } 
             neighbor_com_num += 1;
         }
     }
@@ -1471,17 +1585,19 @@ __device__ void compute_neighbors_weights_blk_list(int com, weight_t *weights, v
     if (lane_id < warp_num_in_blk)
     {
         sum = sum_each_warp[lane_id];
+        // if(com==48&&threadIdx.x<32) printf("%d %d\n",threadIdx.x,sum);
     }
 
-    for (int i = 1; i <= warp_size / 2; i *= 2)
+    for (int i = 1; i <= warp_num_in_blk / 2; i *= 2)
     { // total neighbor num of a block(merge vertex)
-        int value = __shfl_up_sync(0xffffffff, sum, i, warp_size);
-        if (lane_id >= i)
+        int value = __shfl_up_sync(0xffffffff, sum, i, warp_num_in_blk);
+        if (lane_id & (warp_num_in_blk - 1) >= i)
             sum += value;
     }
 
-    if (threadIdx.x == blockDim.x - 1)
+    if (threadIdx.x == warp_num_in_blk - 1)
     {
+        // if(com==48&&threadIdx.x<32) printf("!%d %d\n",threadIdx.x,sum);
         new_degrees[com] = sum;
     }
 }
@@ -1489,7 +1605,7 @@ __device__ void compute_neighbors_weights_blk_list(int com, weight_t *weights, v
 __global__ void build_by_warp(int *sorted_community_id, weight_t *weights, vertex_t *neighbors, edge_t *degrees,
                               weight_t *new_weights, vertex_t *new_neighbors, edge_t *new_degrees,
                               edge_t *neighbor_com_ptr_max, edge_t *edge_num_of_community, int *gathered_vertex_ptr, int *gathered_vertex_by_community, int *community,
-                              int com_num_to_proc, int table_size, int warp_size, int community_num)
+                              int com_num_to_proc, int table_size, int warp_size, int community_num, int is_store)
 { //
     int warp_id = threadIdx.x / warp_size;
     int lane_id = threadIdx.x % warp_size;
@@ -1523,7 +1639,7 @@ __global__ void build_by_warp(int *sorted_community_id, weight_t *weights, verte
                                       &new_weights[start_neighbor_com], &new_neighbors[start_neighbor_com], new_degrees,
                                       community, gathered_vertex_ptr, gathered_vertex_by_community,
                                       neighbor_com_ids, neighbor_com_weights,
-                                      lane_id, table_size, warp_size);
+                                      lane_id, table_size, warp_size, is_store);
         }
         else
         {
@@ -1532,7 +1648,7 @@ __global__ void build_by_warp(int *sorted_community_id, weight_t *weights, verte
                                            &new_weights[start_neighbor_com], &new_neighbors[start_neighbor_com], new_degrees,
                                            community, gathered_vertex_ptr, gathered_vertex_by_community,
                                            neighbor_com_ids, neighbor_com_weights,
-                                           lane_id, community_num, warp_size);
+                                           lane_id, community_num, warp_size, is_store);
         }
 
         __syncthreads(); //
@@ -1542,8 +1658,8 @@ __global__ void build_by_warp(int *sorted_community_id, weight_t *weights, verte
 __global__ void build_by_block(int *sorted_community_id, weight_t *weights, vertex_t *neighbors, edge_t *degrees,
                                weight_t *new_weights, vertex_t *new_neighbors, edge_t *new_degrees,
                                edge_t *neighbor_com_ptr_max, edge_t *edge_num_of_community, int *gathered_vertex_ptr, int *gathered_vertex_by_community, int *community,
-                               int *global_table_ptr, int *glbTable, int *primes, int prime_num,
-                               int com_num_to_proc, int warp_size, int global_limit, int community_num)
+                               int *global_table_ptr, int *glbTable, int glb_table_size, int *primes, int prime_num,
+                               int com_num_to_proc, int warp_size, int global_limit, int community_num, int is_store)
 { // a community allocate a block
     __shared__ int neighbor_com_info[SHARE_MEM_SIZE * 2];
     int shared_half_size = SHARE_MEM_SIZE; // total share memory size
@@ -1574,10 +1690,10 @@ __global__ void build_by_block(int *sorted_community_id, weight_t *weights, vert
         {    //
             // hash or list
             int start_glb_table = global_table_ptr[blockIdx.x];
-            int global_half_size = global_table_ptr[com_num_to_proc]; // the edge num in community >4047
+            // int global_half_size = global_table_ptr[com_num_to_proc]; // the edge num in community >4047
 
             neighbor_com_ids = &glbTable[start_glb_table];
-            neighbor_com_weights = &glbTable[start_glb_table + global_half_size];
+            neighbor_com_weights = &glbTable[start_glb_table + glb_table_size];
             table_size = global_table_ptr[blockIdx.x + 1] - global_table_ptr[blockIdx.x];
 
             if (edge_num_in_community >= community_num && community_num <= SHARE_MEM_SIZE)
@@ -1596,25 +1712,156 @@ __global__ void build_by_block(int *sorted_community_id, weight_t *weights, vert
         __syncthreads();
         if (edge_num_in_community < community_num)
         {
-
-            compute_neighbors_weights_blk(com, weights, neighbors, degrees,
+            if(community_num <= table_size){
+                compute_neighbors_weights_blk_list_v2(com, weights, neighbors, degrees,
+                    &new_weights[start_neighbor_com], &new_neighbors[start_neighbor_com], new_degrees,
+                    community, gathered_vertex_ptr, gathered_vertex_by_community,
+                    neighbor_com_ids, neighbor_com_weights,
+                    threadIdx.x, community_num, warp_size, is_store);
+            }
+            else{
+                compute_neighbors_weights_blk(com, weights, neighbors, degrees,
                                           &new_weights[start_neighbor_com], &new_neighbors[start_neighbor_com], new_degrees,
                                           community, gathered_vertex_ptr, gathered_vertex_by_community,
                                           neighbor_com_ids, neighbor_com_weights,
-                                          threadIdx.x, table_size, warp_size);
+                                          threadIdx.x, table_size, warp_size, is_store);
+            }
         }
         else
         {
-
             compute_neighbors_weights_blk_list(com, weights, neighbors, degrees,
                                                &new_weights[start_neighbor_com], &new_neighbors[start_neighbor_com], new_degrees,
                                                community, gathered_vertex_ptr, gathered_vertex_by_community,
                                                neighbor_com_ids, neighbor_com_weights,
-                                               threadIdx.x, community_num, warp_size);
+                                               threadIdx.x, community_num, warp_size, is_store);
         }
         __syncthreads(); 
     }
 }
+
+//10 blocks for one super-v
+__global__ void build_by_grid(int *sorted_community_id, weight_t *weights, vertex_t *neighbors, edge_t *degrees,
+                  weight_t *new_weights, vertex_t *new_neighbors, edge_t *new_degrees,
+                   edge_t *neighbor_com_ptr_max, edge_t *edge_num_of_community, int *gathered_vertex_ptr, int *gathered_vertex_by_community, int *community,
+                   int *global_table_ptr, int *glbTable, int glb_table_size, int *primes, int prime_num,
+                   int com_num_to_proc, int warp_size, int global_limit, int community_num, int* block_sum, int is_store)
+{ // a community allocate a block
+     __shared__ int sdata[SHARE_MEM_SIZE*2];
+    cg::grid_group grid = cg::this_grid();
+    // int shared_half_size = SHARE_MEM_SIZE; // total share memory size
+    // int table_size;
+    // int block_id = blockIdx.x; // com_id
+    // int block_num = gridDim.x;
+    // int grid_id = blockIdx.x / gridDim.x;
+    // int grid_num = 1;
+    int block_id_in_grid = blockIdx.x % gridDim.x;
+    int block_num_in_grid = gridDim.x;
+    int thread_num_in_grid = blockDim.x * gridDim.x;
+    int tid = (threadIdx.x + blockDim.x * blockIdx.x) % thread_num_in_grid;
+    
+    // int *neighbor_com_ids;
+    int *neighbor_com_weights;
+    for (int wp = 0; wp < com_num_to_proc; wp += 1)
+    {
+
+        int com = sorted_community_id[wp];
+        edge_t start_neighbor_com = neighbor_com_ptr_max[com];
+
+        // int edge_num_in_community = edge_num_of_community[com];
+       
+        int start_glb_table = global_table_ptr[wp];
+        // int global_half_size = global_table_ptr[com_num_to_proc]; // the edge num in community >4047
+
+        int* blockSums = block_sum;
+        // neighbor_com_ids = &glbTable[start_glb_table];
+
+        neighbor_com_weights = &glbTable[start_glb_table + glb_table_size];
+
+
+        __syncthreads();
+
+        int start_vertex = gathered_vertex_ptr[com];
+        int end_vertex = gathered_vertex_ptr[com + 1]; // get the position of vertexs in com
+        int neighbor_com_num = 0;                      //
+    
+        for (int i = start_vertex + block_id_in_grid; i < end_vertex; i += block_num_in_grid)
+        { //
+            int v = gathered_vertex_by_community[i];
+            edge_t start_neighbor = degrees[v];
+            edge_t end_neighbor = degrees[v + 1];
+    
+            for (int j = threadIdx.x; j < (end_neighbor - start_neighbor); j += blockDim.x)
+            {
+                int neighbor_v = neighbors[start_neighbor + j];
+                // printf("%d %d\n",blockIdx.x,neighbor_v);
+                int neighbor_com = community[neighbor_v];
+                int neighbor_weight = weights[start_neighbor + j]; //!!!!!!!!!!!!!
+                // int res = atomicCAS(&new_neighbors[start_neighbor_com + neighbor_com], -1, neighbor_com);
+                atomicAdd(&neighbor_com_weights[ neighbor_com], neighbor_weight);
+                // if(res == -1){
+                //     neighbor_com_num += 1;
+                // }
+                // __syncthreads();
+            }
+        }
+        grid.sync();
+        for (int i = tid; i < community_num; i += thread_num_in_grid)
+        {
+            if (neighbor_com_weights[i] > 0)
+            {
+                if(is_store==1){
+                    new_neighbors[start_neighbor_com +i] = i;
+                    new_weights[start_neighbor_com +i] = neighbor_com_weights[i];
+                } 
+                neighbor_com_num += 1;
+            }
+        }
+        sdata[threadIdx.x] = neighbor_com_num;
+
+        __syncthreads();
+        for (int s = blockDim.x / 2; s > 0; s /= 2) {
+            if (threadIdx.x < s) {
+                sdata[threadIdx.x] += sdata[threadIdx.x + s];
+            }
+            __syncthreads();
+        }
+
+        if (threadIdx.x == 0 && blockIdx.x < gridDim.x) {  
+            blockSums[blockIdx.x] = sdata[0];
+            // if(wp==0){
+            //     printf("!!!%d %d %d %d %d\n",threadIdx.x,blockIdx.x,wp,com,sdata[0]);
+            // }
+        }   
+        grid.sync();
+
+        if (blockIdx.x == gridDim.x-1) {
+
+            int sum = 0;
+            for(int i = threadIdx.x; i < gridDim.x; i += blockDim.x){
+                sum += blockSums[i];
+            }
+            // if(wp==0)
+            //     printf("!!!%d %d %d %d %d\n",threadIdx.x,blockIdx.x,wp,com,sum);
+            sdata[threadIdx.x] = sum;
+            __syncthreads();
+
+            for (int s = blockDim.x / 2; s > 0; s /= 2) {
+                if (threadIdx.x < s) {
+                    sdata[threadIdx.x] += sdata[threadIdx.x + s];
+                }
+                __syncthreads();
+            }
+
+
+            if (threadIdx.x == 0) {
+                
+                new_degrees[com] = sdata[0];
+            }
+        }
+
+    }
+}
+
 
 // build graph functions end
 
