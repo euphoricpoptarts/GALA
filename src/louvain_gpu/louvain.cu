@@ -69,15 +69,18 @@ double louvain_gpu(Graph &g, vertex_t *h_comminity,
 								   community_num, round, min_modularity, m2, pruning_method);
 	end1 = get_time();
 
-	thrust::gather(community_round.begin(), community_round.end(),
-				   d_community.begin(), d_community.begin());
-
 	printf("louvain time in the first round = %fms\n", end1 - start1);
 
 	start1 = get_time();
 	community_num = build_compressed_graph(g_gpu.d_weights, g_gpu.d_neighbors,
 										   g_gpu.d_degrees, community_round,
 										   primes, community_num);
+	
+	// this needs to be after build_compressed_graph
+	// because the communities are renumbered in that function
+	thrust::gather(d_community.begin(), d_community.end(),
+				   community_round.begin(), d_community.begin());
+
 	end1 = get_time();
 	printf("build time in the first round = %fms\n", end1 - start1);
 
@@ -92,12 +95,13 @@ double louvain_gpu(Graph &g, vertex_t *h_comminity,
 			g_gpu.d_weights, g_gpu.d_neighbors, g_gpu.d_degrees,
 			community_round, primes, community_num, round, min_modularity, m2, pruning_method);
 
-		thrust::gather(community_round.begin(), community_round.end(),
-					   d_community.begin(), d_community.begin());
-
 		community_num = build_compressed_graph(
 			g_gpu.d_weights, g_gpu.d_neighbors, g_gpu.d_degrees,
 			community_round, primes, community_num);
+		// this needs to be after build_compressed_graph
+		// because the communities are renumbered in that function
+		thrust::gather(d_community.begin(), d_community.end(),
+					community_round.begin(), d_community.begin());
 
 		printf("number of communities:%d modularity:%f\n", community_num, cur_mod);
 		// print_CSR(&weights,&neighbors,&degrees,&community_num);
