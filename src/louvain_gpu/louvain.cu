@@ -59,6 +59,7 @@ double louvain_gpu(Graph &g, vertex_t *h_comminity,
 
 	// init end
 	double start, end;
+	double build_time = 0;
 	start = get_time();
 
 	printf("===============round:%d===============\n", round);
@@ -75,14 +76,15 @@ double louvain_gpu(Graph &g, vertex_t *h_comminity,
 	community_num = build_compressed_graph(g_gpu.d_weights, g_gpu.d_neighbors,
 										   g_gpu.d_degrees, community_round,
 										   primes, community_num);
+	end1 = get_time();
 	
 	// this needs to be after build_compressed_graph
 	// because the communities are renumbered in that function
 	thrust::gather(d_community.begin(), d_community.end(),
 				   community_round.begin(), d_community.begin());
 
-	end1 = get_time();
 	printf("build time in the first round = %fms\n", end1 - start1);
+	build_time += end1 - start1;
 
 	printf("number of communities:%d modularity:%f\n", community_num, cur_mod);
 	// return 1;//!!!!!!!!!!!!!!!!!!
@@ -95,9 +97,12 @@ double louvain_gpu(Graph &g, vertex_t *h_comminity,
 			g_gpu.d_weights, g_gpu.d_neighbors, g_gpu.d_degrees,
 			community_round, primes, community_num, round, min_modularity, m2, pruning_method);
 
+		start1 = get_time();
 		community_num = build_compressed_graph(
 			g_gpu.d_weights, g_gpu.d_neighbors, g_gpu.d_degrees,
 			community_round, primes, community_num);
+		end1 = get_time();
+		build_time += end1 - start1;
 		// this needs to be after build_compressed_graph
 		// because the communities are renumbered in that function
 		thrust::gather(d_community.begin(), d_community.end(),
@@ -110,6 +115,7 @@ double louvain_gpu(Graph &g, vertex_t *h_comminity,
 	end = get_time();
 	printf("final number of communities:%d --> %d final modularity:%f\n", g.vertex_num, community_num, cur_mod);
 	printf("execution time without data transfer = %fms\n", end - start);
+	printf("Total build time = %fms\n", build_time);
 
 	thrust::copy(d_community.begin(), d_community.end(), h_comminity);
 

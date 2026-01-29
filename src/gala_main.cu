@@ -18,6 +18,34 @@ void save_community(string file, vertex_t *community, int vertex_num){
     cout<<"write finished"<<endl;
 }
 
+double verify_modularity2(const Graph& g, vertex_t* community, int vertex_num) {
+    vector<int> comm_size(vertex_num, 0);
+    int uncutsize = 0, cutsize = 0;
+    for(int i = 0; i < vertex_num; i++){
+        int start = 0;
+        if(i > 0) start = g.degrees[i-1];
+        int end = g.degrees[i];
+        for(int j = start; j < end; j++){
+            int v = g.neighbors[j];
+            if(community[i] == community[v]) uncutsize += g.weights[j];
+            else cutsize += g.weights[j];
+        }
+        int deg = end - start;
+        comm_size[community[i]] += deg;
+    }
+    int g_deg = cutsize + uncutsize;
+    double mod = 0;
+    int tdeg = 0;
+    for(int i = 0; i < vertex_num; i++){
+        double cs = comm_size[i];
+        tdeg += cs;
+        mod += cs*cs;
+    }
+    mod /= g_deg;
+    mod = (uncutsize - mod) / g_deg;
+    return mod;
+}
+
 int main(int argc, char **argv)
 {
     string file_name;
@@ -59,11 +87,15 @@ int main(int argc, char **argv)
 
     vertex_t *community = new vertex_t[g.vertex_num];
 
-    double curMod = louvain_gpu(g, community, threshold, pruning);
+    for(int i = 0; i < 21; i++){
+        double curMod = louvain_gpu(g, community, threshold, pruning);
+    }
 
     double end = get_time();
 
     printf("elapsed time = %fms\n", end - start);
+    // double v_mod = verify_modularity2(g, community, g.vertex_num);
+    // cout << "Verify modularity: " << v_mod << endl;
 
     if(!output_file.empty())
         save_community(output_file,community, g.vertex_num);
