@@ -1,7 +1,7 @@
 CXX = g++
 NVCC = nvcc
 CXXFLAGS = -std=c++17 -O3
-NVCCFLAGS = -arch=sm_80 -O3
+NVCCFLAGS = -arch=sm_100 -O3
 INCLUDE_DIRS = ./
 
 all: preprocess gala_main
